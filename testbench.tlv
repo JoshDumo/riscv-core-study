@@ -5,8 +5,25 @@
    use(m5-1.0) // Use M5 libraries
    
 \TLV riscvsingle($clk, $reset, $pc, $instr, $memwrite, $dataadr, $writedata, $readdata)
+   $alusrc
+   $regwrite
+   $jump
+   $zero
+   $resultsrc[1:0]
+   $immsrc[1:0]
+   $alucontrol[2:0]
+   m5+controller($inst[6:0], $inst[14;12], $zero, 
+                 $resultsrc, $memwrite, $pcsrc, $alusrc,
+                 $regwrite, $jump, $immsrc, $alucontrol)
+   m5+datapath($clk, $reset, $resultsrc, $pcsrc, $alusrc,
+               $regwrite, $immsrc, $alucontrol, $zero, $pc, 
+               $instr, $aluresult, $writedata, $readdata)
 
+\TLV controller()
 
+\TLV datapath($clk, $reset, $resultsrc, $pcsrc, $alusrc, $regwrite, $immsrc, $alucontrol, $zero, $pc, $instr, $aluresult, $writedata, $readdata)
+   
+   
 \SV
    // Instruction Memory
    module imem(input logic [31:0] a,output logic [31:0] rd);
