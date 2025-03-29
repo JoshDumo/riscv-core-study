@@ -3,15 +3,42 @@
    // This region contains M5 macro definitions. It will not appear
    // in the resulting TLV code (in the NAV-TLV tab).
    use(m5-1.0) // Use M5 libraries
+\TLV flopr(#width, $clk, $reset, $d, $q)
+   $q[m5_calc((#width)-1):0] = $reset ? #width'b0 : $d[m5_calc((#width)-1):0];
+
+\TLV flopenr(#width, $clk, $reset, $en, $d, $q)
+   $q[m5_calc((#width)-1):0] = $reset ? #width'b0 : 
+                                        ($en ? $d[m5_calc((#width)-1):0] : #width'b0);
+   
+\TLV adder($a, $b, $y)
+   $y = $a + $b;
+   
+\TLV extend($instr, $immsrc, $immext)
+   $immext[31:0] = $immsrc[1:0] == 2'b00 ? {{20{instr[31]}}, instr[31:20]} :
+                   $immsrc[1:0] == 2'b01 ? {{20{instr[31]}}, instr[31:25], instr[11:7]} :
+                   $immsrc[1:0] == 2'b10 ? {{20{instr[31]}}, instr[7], instr[30:25], instr[11:8], 1’b0} :
+                   $immsrc[1:0] == 2'b11 ? {{12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1’b0} :
+                                           32'bx;
+
+\TLV mux2(#width, $d0, $d1, $s, $y)
+   $y[m5_calc((#width)-1):0] = $s ? $d1[m5_calc((#width)-1):0] : $d0[m5_calc((#width)-1):0];
+   
+\TLV mux3(#width, $d0, $d1, $d2, $s, $y)
+   $y[m5_calc((#width)-1):0] = $s[1] ? $d2[m5_calc((#width)-1):0] :
+                              ($s[0] ? $d1[m5_calc((#width)-1):0] : $d0[m5_calc((#width)-1):0]);   
+   
+
+\TLV alu()
    
 \TLV riscvsingle($clk, $reset, $pc, $instr, $memwrite, $dataadr, $writedata, $readdata)
-   $alusrc
-   $regwrite
-   $jump
-   $zero
-   $resultsrc[1:0]
-   $immsrc[1:0]
-   $alucontrol[2:0]
+   $alusrc;
+   $regwrite;
+   $jump;
+   $zero;
+   $resultsrc;
+   $immsrc;
+   $alucontrol;
+   
    m5+controller($inst[6:0], $inst[14;12], $zero, 
                  $resultsrc, $memwrite, $pcsrc, $alusrc,
                  $regwrite, $jump, $immsrc, $alucontrol)
@@ -22,7 +49,27 @@
 \TLV controller()
 
 \TLV datapath($clk, $reset, $resultsrc, $pcsrc, $alusrc, $regwrite, $immsrc, $alucontrol, $zero, $pc, $instr, $aluresult, $writedata, $readdata)
-   
+   $pcnext;
+   $pcplusfour;
+   $pctarget;
+   $immext;
+   $srca;
+   $srcb;
+   $result;
+   // next PC logic
+   m5+flopr(32, $clk, $reset, $pcnext, $pc)
+   m5+adder($pc, 32'd4, $pcplusfour)
+   m5+adder($pc, $immext, $pctarget)
+   m5+mux2(32, $pcplusfour, $pctarget, $pcsrc, $pcnext)
+   // register file logic
+\SV
+   regfile rf(clk, RegWrite, Instr[19:15], Instr[24:20], Instr[11:7], Result, SrcA, WriteData);
+\TLV   
+   m5+extend($instr[31:7], $immsrc, $immext)
+   // ALU logic
+   m5+mux2(32, $writedata, $immext, $alusrc, $srcb)
+   m5+alu($srca, $srcb, $alucontrol, $aluresult, $zero)
+   m5+mux3(32, $aluresult, $readdata, $pcplusfour, $resultsrc, $result)
    
 \SV
    // Instruction Memory
@@ -61,6 +108,19 @@
       assign rd = RAM[a[31:2]]; // word aligned
       always_ff @(posedge clk)
          if (we) RAM[a[31:2]] <= wd;
+   endmodule
+
+   // Register File
+   module regfile(input logic clk, input logic we3, input logic [5:0] a1, a2, a3, input logic [31:0] wd3, output logic [31:0] rd1, rd2);
+      logic [31:0] rf[31:0];
+      // three ported register file
+      // read two ports combinationally (A1/RD1, A2/RD2)
+      // write third port on rising edge of clock (A3/WD3/WE3)
+      // register 0 hardwired to 0
+      always_ff @(posedge clk)
+         if (we3) rf[a3] <= wd3;
+            assign rd1 = (a1 != 0) ? rf[a1] : 0;
+            assign rd2 = (a2 != 0) ? rf[a2] : 0;
    endmodule
 
    // The main module (as required for Makerchip).
