@@ -3,73 +3,6 @@
    // This region contains M5 macro definitions. It will not appear
    // in the resulting TLV code (in the NAV-TLV tab).
    use(m5-1.0) // Use M5 libraries
-\TLV flopr(#width, $clk, $reset, $d, $q)
-   $q[m5_calc((#width)-1):0] = $reset ? #width'b0 : $d[m5_calc((#width)-1):0];
-
-\TLV flopenr(#width, $clk, $reset, $en, $d, $q)
-   $q[m5_calc((#width)-1):0] = $reset ? #width'b0 : 
-                                        ($en ? $d[m5_calc((#width)-1):0] : #width'b0);
-   
-\TLV adder($a, $b, $y)
-   $y = $a + $b;
-   
-\TLV extend($instr, $immsrc, $immext)
-   $immext[31:0] = $immsrc[1:0] == 2'b00 ? {{20{instr[31]}}, instr[31:20]} :
-                   $immsrc[1:0] == 2'b01 ? {{20{instr[31]}}, instr[31:25], instr[11:7]} :
-                   $immsrc[1:0] == 2'b10 ? {{20{instr[31]}}, instr[7], instr[30:25], instr[11:8], 1’b0} :
-                   $immsrc[1:0] == 2'b11 ? {{12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1’b0} :
-                                           32'bx;
-
-\TLV mux2(#width, $d0, $d1, $s, $y)
-   $y[m5_calc((#width)-1):0] = $s ? $d1[m5_calc((#width)-1):0] : $d0[m5_calc((#width)-1):0];
-   
-\TLV mux3(#width, $d0, $d1, $d2, $s, $y)
-   $y[m5_calc((#width)-1):0] = $s[1] ? $d2[m5_calc((#width)-1):0] :
-                              ($s[0] ? $d1[m5_calc((#width)-1):0] : $d0[m5_calc((#width)-1):0]);   
-   
-
-\TLV alu()
-   
-\TLV riscvsingle($clk, $reset, $pc, $instr, $memwrite, $dataadr, $writedata, $readdata)
-   $alusrc;
-   $regwrite;
-   $jump;
-   $zero;
-   $resultsrc;
-   $immsrc;
-   $alucontrol;
-   
-   m5+controller($inst[6:0], $inst[14;12], $zero, 
-                 $resultsrc, $memwrite, $pcsrc, $alusrc,
-                 $regwrite, $jump, $immsrc, $alucontrol)
-   m5+datapath($clk, $reset, $resultsrc, $pcsrc, $alusrc,
-               $regwrite, $immsrc, $alucontrol, $zero, $pc, 
-               $instr, $aluresult, $writedata, $readdata)
-
-\TLV controller()
-
-\TLV datapath($clk, $reset, $resultsrc, $pcsrc, $alusrc, $regwrite, $immsrc, $alucontrol, $zero, $pc, $instr, $aluresult, $writedata, $readdata)
-   $pcnext;
-   $pcplusfour;
-   $pctarget;
-   $immext;
-   $srca;
-   $srcb;
-   $result;
-   // next PC logic
-   m5+flopr(32, $clk, $reset, $pcnext, $pc)
-   m5+adder($pc, 32'd4, $pcplusfour)
-   m5+adder($pc, $immext, $pctarget)
-   m5+mux2(32, $pcplusfour, $pctarget, $pcsrc, $pcnext)
-   // register file logic
-\SV
-   regfile rf(clk, RegWrite, Instr[19:15], Instr[24:20], Instr[11:7], Result, SrcA, WriteData);
-\TLV   
-   m5+extend($instr[31:7], $immsrc, $immext)
-   // ALU logic
-   m5+mux2(32, $writedata, $immext, $alusrc, $srcb)
-   m5+alu($srca, $srcb, $alucontrol, $aluresult, $zero)
-   m5+mux3(32, $aluresult, $readdata, $pcplusfour, $resultsrc, $result)
    
 \SV
    // Instruction Memory
@@ -151,13 +84,59 @@
 \TLV
    $clk = *clk;
    $reset = *reset;
-   $writedata = *WriteData;
-   $dataadr = *DataAdr;
-   $memwrite = *MemWrite;
-   $pc = *PC;
-   $instr = *Instr;
-   $readdata = *ReadData;
-   m5+riscvsingle($clk, $reset, $pc, $instr, $memwrite, $dataadr, $writedata, $readdata)
+   
+   /controller
+      $immsrc[1:0] = 2'b0;
+      $pcsrc = 0;
+      $alusrc = 0;
+      $alucontrol[2:0] = 3'b0;
+      $zero = 0;
+      $resultsrc[1:0] = 2'b0;
+   /datapath
+      $pc = *PC;
+      $dataadr = *DataAdr;
+      $memwrite = *MemWrite;
+      $instr[31:0] = *Instr;
+      $readdata = *ReadData;
+      /pc
+         /datapath$pc = /top$reset ? 32'b0 : >>1$pcnext;
+         // "Usual Next Address
+         $pcplusfour = /datapath$pc + 32'd4;
+         // Jump?
+         $pctarget = /datapath$pc + /datapath/extender$immext;
+         $pcnext = /top/controller$pcsrc ? $pctarget : $pcplusfour;
+\SV
+   regfile rf(clk, RegWrite, Instr[19:15], Instr[24:20], Instr[11:7], Result, SrcA, WriteData);
+\TLV
+   /datapath
+      $srca = *SrcA;
+      $srcb = 0;
+      $writedata = *WriteData;
+      /extender
+         $immext[31:0] = // I-type
+                   /top/controller$immsrc == 2'b00 ? {{20{/datapath$instr[31]}}, /datapath$instr[31:20]} :
+                   // S-type
+                   /top/controller$immsrc == 2'b01 ? {{20{/datapath$instr[31]}}, /datapath$instr[31:25], /datapath$instr[11:7]} :
+                   // B-type
+                   /top/controller$immsrc == 2'b10 ? {{20{/datapath$instr[31]}}, /datapath$instr[7], /datapath$instr[30:25], /datapath$instr[11:8], 1'b0} :
+                   // J-type 
+                   /top/controller$immsrc == 2'b11 ? {{12{/datapath$instr[31]}}, /datapath$instr[19:12], /datapath$instr[20], /datapath$instr[30:21], 1'b0} :
+                                      32'bx;
+      $srcb = /top/controller$alusrc ? /extender$immext : /datapath$writedata;
+      /alu
+         $condinvb = /top/controller$alucontrol[0] ? !/datapath$srcb : /datapath$srcb;
+         $sum[31:0] = /datapath$srca + $condinvb + /top/controller$alucontrol[0];
+         $aluresult[31:0] = /top/controller$alucontrol == 3'b000 ? $sum :            // add
+                         /top/controller$alucontrol == 3'b001 ? $sum :            // subtract
+                         /top/controller$alucontrol == 3'b010 ? (/datapath$srca & /datapath$srcb) : // and
+                         /top/controller$alucontrol == 3'b011 ? (/datapath$srca | /datapath$srcb) : // or
+                         /top/controller$alucontrol == 3'b101 ? $sum[31] :        // slt
+                                                                32'bx;            //default
+         /top/controller$zero = $aluresult == 32'b0 ? 1 : 0; //zero flag
+         //mux
+         $result[31:0] = /top/controller$resultsrc[1] == 1 ? /datapath/pc$pcplusfour :
+                     (/top/controller$resultsrc[0] == 1 ? /datapath$readdata : $aluresult);
+
 \SV   
    imem imem(PC, Instr);
    dmem dmem(clk, MemWrite, DataAdr, WriteData, ReadData);
