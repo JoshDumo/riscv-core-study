@@ -32,15 +32,19 @@
             RAM[19] = 32'h0221A023;
             RAM[20] = 32'h00210063;
       end
+      /* verilator lint_off WIDTHTRUNC */
       assign rd = RAM[a[31:2]]; // word aligned
+      /* verilator lint_on WIDTHTRUNC */
    endmodule
 
    // Data Memory
    module dmem(input logic clk, we, input logic [31:0] a, wd, output logic [31:0] rd);
       logic [31:0] RAM[63:0];
+      /* verilator lint_off WIDTHTRUNC */
       assign rd = RAM[a[31:2]]; // word aligned
       always_ff @(posedge clk)
          if (we) RAM[a[31:2]] <= wd;
+      /* verilator lint_on WIDTHTRUNC */
    endmodule
 
    // Register File
@@ -51,9 +55,11 @@
       // write third port on rising edge of clock (A3/WD3/WE3)
       // register 0 hardwired to 0
       always_ff @(posedge clk)
+         /* verilator lint_off WIDTHTRUNC */
          if (we3) rf[a3] <= wd3;
             assign rd1 = (a1 != 0) ? rf[a1] : 0;
             assign rd2 = (a2 != 0) ? rf[a2] : 0;
+         /* verilator lint_on WIDTHTRUNC */
    endmodule
 
    // The main module (as required for Makerchip).
@@ -79,65 +85,96 @@
    endmodule
 
    module dut(input logic clk, reset, output logic [31:0] WriteData, DataAdr, output logic MemWrite);
-   logic [31:0] PC, Instr, ReadData;
+      logic [31:0] PC, Instr, ReadData, SrcA, Result;
+      logic RegWrite;
       // instantiate processor and memories
 \TLV
-   $clk = *clk;
    $reset = *reset;
-   
    /controller
-      $immsrc[1:0] = 2'b0;
-      $pcsrc = 0;
-      $alusrc = 0;
-      $alucontrol[2:0] = 3'b0;
-      $zero = 0;
-      $resultsrc[1:0] = 2'b0;
+      $op[6:0] = /top/imem$instr[6:0];
+      $funct3[2:0] = /top/imem$instr[14:12];
+      $funct7b5 = /top/imem$instr[30];
+      /maindec
+         $controls[10:0] = /top/controller$op == 7'b0000011 ? 11'b1_00_1_0_01_0_00_0 : // lw
+                           /top/controller$op == 7'b0100011 ? 11'b0_01_1_1_00_0_00_0 : // sw
+                           /top/controller$op == 7'b0110011 ? 11'b1_xx_0_0_00_0_10_0 : // R–type
+                           /top/controller$op == 7'b1100011 ? 11'b0_10_0_0_00_1_01_0 : // beq
+                           /top/controller$op == 7'b0010011 ? 11'b1_00_1_0_00_0_10_0 : // I–type ALU
+                           /top/controller$op == 7'b1101111 ? 11'b1_11_0_0_10_0_00_1 : // jal
+                                                              11'bx_xx_x_x_xx_x_xx_x; // default
+         $regwrite = $controls[10];
+         *RegWrite = $regwrite;
+         $immsrc[1:0] = $controls[9:8];
+         $alusrc = $controls[7];
+         $memwrite = $controls[6];
+         *MemWrite = $memwrite;
+         $resultsrc[1:0] = $controls[5:4];
+         $branch = $controls[3];
+         $aluop[1:0] = $controls[2:1];
+         $jump = $controls[0];
+      /aludec
+         $opb5 = /top/controller$op[5];
+         $rtypesub = /top/controller$funct7b5 & $opb5; // TRUE for R–type subtract
+         $alucontrol[2:0] = /top/controller/maindec$aluop == 2'b00 ? 3'b000 : // addition
+                       /top/controller/maindec$aluop == 2'b01 ? 3'b001 : // subtraction
+                                (/top/controller$funct3 == 3'b000 ?
+                                                   ($rtypesub == 1 ?
+                                                   3'b001 : 3'b000) :
+                                 /top/controller$funct3 == 3'b010 ? 3'b101 :
+                                 /top/controller$funct3 == 3'b110 ? 3'b011 :
+                                 /top/controller$funct3 == 3'b111 ? 3'b010 :
+                                                                    3'bxxx);
+      $pcsrc = /top/controller/maindec$branch & /top/datapath/alu$zero | /top/controller/maindec$jump;
    /datapath
-      $pc = *PC;
-      $dataadr = *DataAdr;
-      $memwrite = *MemWrite;
-      $instr[31:0] = *Instr;
-      $readdata = *ReadData;
       /pc
-         /datapath$pc = /top$reset ? 32'b0 : >>1$pcnext;
+         $pc[31:0] = /top$reset ? 32'b0 : >>1$pcnext;
          // "Usual Next Address
-         $pcplusfour = /datapath$pc + 32'd4;
+         $pcplusfour[31:0] = /top$reset ? 32'b0 : ($pc + 32'd4);
          // Jump?
-         $pctarget = /datapath$pc + /datapath/extender$immext;
-         $pcnext = /top/controller$pcsrc ? $pctarget : $pcplusfour;
+         $pctarget[31:0] = /top$reset ? 32'b0 : ($pc + /datapath/extender$immext);
+         $pcnext[31:0] = /top/controller$pcsrc ? $pctarget : $pcplusfour;
 \SV
    regfile rf(clk, RegWrite, Instr[19:15], Instr[24:20], Instr[11:7], Result, SrcA, WriteData);
 \TLV
    /datapath
-      $srca = *SrcA;
-      $srcb = 0;
-      $writedata = *WriteData;
+      /regfile
+         $srca[31:0] = *SrcA;
+         $writedata[31:0] = *WriteData;
       /extender
          $immext[31:0] = // I-type
-                   /top/controller$immsrc == 2'b00 ? {{20{/datapath$instr[31]}}, /datapath$instr[31:20]} :
+                   /top/controller/maindec$immsrc == 2'b00 ? {{20{/top/imem$instr[31]}}, /top/imem$instr[31:20]} :
                    // S-type
-                   /top/controller$immsrc == 2'b01 ? {{20{/datapath$instr[31]}}, /datapath$instr[31:25], /datapath$instr[11:7]} :
+                   /top/controller/maindec$immsrc == 2'b01 ? {{20{/top/imem$instr[31]}},/top/imem$instr[31:25], /top/imem$instr[11:7]} :
                    // B-type
-                   /top/controller$immsrc == 2'b10 ? {{20{/datapath$instr[31]}}, /datapath$instr[7], /datapath$instr[30:25], /datapath$instr[11:8], 1'b0} :
+                   /top/controller/maindec$immsrc == 2'b10 ? {{20{/top/imem$instr[31]}}, /top/imem$instr[7], /top/imem$instr[30:25], /top/imem$instr[11:8], 1'b0} :
                    // J-type 
-                   /top/controller$immsrc == 2'b11 ? {{12{/datapath$instr[31]}}, /datapath$instr[19:12], /datapath$instr[20], /datapath$instr[30:21], 1'b0} :
+                   /top/controller/maindec$immsrc == 2'b11 ? {{12{/top/imem$instr[31]}}, /top/imem$instr[19:12], /top/imem$instr[20], /top/imem$instr[30:21], 1'b0} :
                                       32'bx;
-      $srcb = /top/controller$alusrc ? /extender$immext : /datapath$writedata;
+      /regfile
+         $srcb[31:0] = /top/controller/maindec$alusrc == 1 ? /top/datapath/extender$immext : /top/datapath/regfile$writedata;
       /alu
-         $condinvb = /top/controller$alucontrol[0] ? !/datapath$srcb : /datapath$srcb;
-         $sum[31:0] = /datapath$srca + $condinvb + /top/controller$alucontrol[0];
-         $aluresult[31:0] = /top/controller$alucontrol == 3'b000 ? $sum :            // add
-                         /top/controller$alucontrol == 3'b001 ? $sum :            // subtract
-                         /top/controller$alucontrol == 3'b010 ? (/datapath$srca & /datapath$srcb) : // and
-                         /top/controller$alucontrol == 3'b011 ? (/datapath$srca | /datapath$srcb) : // or
-                         /top/controller$alucontrol == 3'b101 ? $sum[31] :        // slt
+         $condinvb[31:0] = /top/controller/aludec$alucontrol[0] ? ~/top/datapath/regfile$srcb : /top/datapath/regfile$srcb;
+         $sum[31:0] = /top/datapath/regfile$srca + $condinvb + /top/controller/aludec$alucontrol[0];
+         $aluresult[31:0] = /top/controller/aludec$alucontrol == 3'b000 ? $sum :            // add
+                         /top/controller/aludec$alucontrol == 3'b001 ? $sum :            // subtract
+                         /top/controller/aludec$alucontrol == 3'b010 ? (/top/datapath/regfile$srca & /top/datapath/regfile$srcb) : // and
+                         /top/controller/aludec$alucontrol == 3'b011 ? (/top/datapath/regfile$srca | /top/datapath/regfile$srcb) : // or
+                         /top/controller/aludec$alucontrol == 3'b101 ? $sum[31] :        // slt
                                                                 32'bx;            //default
-         /top/controller$zero = $aluresult == 32'b0 ? 1 : 0; //zero flag
+         $zero = $aluresult == 32'b0 ? 1 : 0; //zero flag
          //mux
-         $result[31:0] = /top/controller$resultsrc[1] == 1 ? /datapath/pc$pcplusfour :
-                     (/top/controller$resultsrc[0] == 1 ? /datapath$readdata : $aluresult);
-
+         $result[31:0] = /top/controller/maindec$resultsrc[1] == 1 ? /datapath/pc$pcplusfour :
+                     (/top/controller/maindec$resultsrc[0] == 1 ? /top/dmem$readdata : $aluresult);
+         *Result = $result;
+   /imem
+      *PC = /top/datapath/pc$pc;
+      $instr[31:0] = *Instr;
 \SV   
    imem imem(PC, Instr);
+\TLV
+   /dmem
+      *DataAdr = /top/datapath/alu$aluresult;
+      $readdata[31:0] = *ReadData;
+\SV
    dmem dmem(clk, MemWrite, DataAdr, WriteData, ReadData);
    endmodule
