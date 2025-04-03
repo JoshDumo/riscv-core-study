@@ -93,7 +93,95 @@
       // instantiate processor and memories
 \TLV
    $reset = *reset;
-   
+   /controller
+      $pcwrite = 1'b0;
+      $irwrite = 1'b0;
+      $adrsrc = 1'b0;
+      $op[6:0] = /top/mem$instr[6:0];
+      $funct3[2:0] = /top/mem$instr[14:12];
+      $funct7b5 = /top/mem$instr[30];
+   /datapath
+      /pc
+         $pc[31:0] = /top<>0$reset ? 32'b0 :
+                     (/top/controller$pcwrite == 1'b1 ? >>1$result : 32'bx);
+         $oldpc[31:0] = /top<>0$reset ? 32'b0 :
+                        (/top/controller$irwrite == 1'b1 ? >>1$pc : 32'bx);
+      /mem
+         $adr[31:0] = $adrsrc == 1'b1 ? $result : $pc;
+         $instr[31:0] = /top<>0$reset ? 32'b0 :
+                         (/top/controller$irwrite == 1'b1 ? >>1$readdata : 32'bx);
+         $data[31:0] = /top<>0$reset ? 32'b0 : >>1$readdata;
 \SV
-      mem mem(clk, MemWrite, DataAdr, WriteData, ReadData);
+      regfile rf(clk, RegWrite, Instr[19:15], Instr[24:20], Instr[11:7], Result, RD1, RD2);
+\TLV  
+   /datapath
+      /regfile
+         $rd1 = *RD1;
+         $rd2 = *RD2;
+         /extend
+            \always_comb
+            $immext[31:0] = // I-type 
+                            /top/controller$immsrc == 3'b000 ?
+                            {{20{/top/mem$instr[31]}}, /top/mem$instr[31:20]} :
+                            // S-type (stores)
+                            /top/controller$immsrc == 3'b001 ?
+                            {{20{/top/mem$instr[31]}}, /top/mem$instr[31:25],
+                            /top/mem$instr[11:7]} :
+                            // B-type (branches)
+                            /top/controller$immsrc == 3'b010 ?
+                            {{20{/top/mem$instr[31]}}, /top/mem$instr[7],
+                            /top/mem$instr[30:25], /top/mem$instr[11:8], 1'b0} :
+                            // J-type (jal)
+                            /top/controller$immsrc == 3'b011 ?
+                            {{12{/top/mem$instr[31]}}, /top/mem$instr[19:12],
+                            /top/mem$instr[20], /top/mem$instr[30:21], 1'b0} :
+                            // U-type (lui, auipc)
+                            /top/controller$immsrc == 3'b100 ?
+                            {/top/mem$instr[31:12], 12'b0} :
+                            // undefined
+                            32'bx;
+         $a = /top<>0$reset ? 32'b0 : >>1$rd1;
+         $writedata = /top<>0$reset ? 32'b0 : >>1$rd2;
+      /alu
+         $srca = /top/controller$alusrca[1] == 1'b1 ? /top/datapath/regfile$a :
+                 (/top/controller$alusrca[0] == 1'b1 ? /top/datapath/pc$oldpc :
+                                                       /top/datapath/pc$pc);
+         $srcb = /top/controller$alusrcb[1] == 1'b1 ? 32'd4 :
+                 (/top/controller$alusrcb[0] == 1'b1 ? /top/datapath/regfile/extend$immext :
+                                                       /top/datapath/regfile$writedata);
+         $flags[3:0] = {$v, $c, $n, $z};
+         $condinvb[31:0] = $alucontrol[0] ? ~$srcb : $srcb;
+         $coutsum[32:0] = $srca + $condinvb + $alucontrol[0];
+         $isAddSub = ~$alucontrol[3] & ~$alucontrol[2] &
+                     ~$alucontrol[1] | ~$alucontrol[3] &
+                     ~$alucontrol[1] & $alucontrol[0];
+         \always_comb
+            $aluresult[31:0] = $alucontrol == 4'b0000 ? $coutsum{31:0] : // add
+                            $alucontrol == 4'b0001 ? $coutsum[31:0] : // subtract
+                            $alucontrol == 4'b0010 ? $srca & $srcb : // and
+                            $alucontrol == 4'b0011 ? $srca | $srcb : // or
+                            $alucontrol == 4'b0100 ? $srca ^ $srcb : // xor
+                            $alucontrol == 4'b0101 ? $coutsum[32] ^ v : // slt
+                            $alucontrol == 4'b0110 ? a << $srcb[4:0] : // sll
+                            $alucontrol == 4'b0111 ? a >> $srcb[4:0] : // srl
+                            $alucontrol == 4'b1000 ? $signed($srca) >>> $srcb[4:0] : // sra
+                                                     32'bx;
+         $z = ($aluresult == 32'b0);
+         $n = $aluresult[31];
+         $c = $coutsum[32] & $isAddSub;
+         $v = ~($alucontrol[0] ^ $srca[31] ^ $srcb[31]) & ($srca[31] ^ $sum[31]) & $isAddSub;
+         $aluout[31:0] = /top<>0$reset ? >>1$aluresult;
+         $result[31:0] = /top/controller$resultsrc[1] == 1'b1 ? $aluresult :
+                   (/top/controller$resultsrc[0] == 1'b1 ? $data : $aluout);
+\TLV
+   /mem
+      // DataAdr is sourced either from aluresult or from PC calculation
+      *DataAdr = /top/datapath/alu$aluresult;
+      // Depending on state, the Read Data is either readdata or instr
+      $instr[31:0] = *ReadData;
+      $readdata[31:0] = *ReadData;
+\SV
+   mem mem(clk, MemWrite, DataAdr, WriteData, ReadData);
    endmodule
+
+
